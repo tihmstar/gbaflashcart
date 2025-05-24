@@ -61,7 +61,7 @@ xxd_embed("bootloader_gba" ${CMAKE_CURRENT_SOURCE_DIR}/../gba/bootloader_mb.gba 
 
 add_executable(${PROJECT_NAME} 
     src/main.cpp
-    src/gbabusrom_sram.c
+    src/gbabus.c
     src/DMAWriteWhatWhere.c
     ${CMAKE_CURRENT_BINARY_DIR}/include/bootloader_gba.hex.h
     ${SOURCES}
@@ -85,8 +85,9 @@ target_link_libraries(${PROJECT_NAME}
     cmake_git_commit_tracking
 )
 
-pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/gbabusrom.pio)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/gbabus.pio)
 
 # Enable usb output, disable uart output
 pico_enable_stdio_usb(${PROJECT_NAME} 0)
 pico_enable_stdio_uart(${PROJECT_NAME} 0)
+pico_set_linker_script(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/linkerscript.ld)

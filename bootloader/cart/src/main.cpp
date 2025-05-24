@@ -1,8 +1,7 @@
 #include "macros.h"
 
-#include "gbabusrom_sram.h"
 #include "DMAWriteWhatWhere.h"
-#include <bootloader_gba.hex.h>
+#include "gbabus.h"
 
 
 #include <stdio.h>
@@ -11,8 +10,14 @@
 
 #include <hardware/clocks.h>
 #include <hardware/pio.h>
+#include <hardware/dma.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
+
+const
+#include <bootloader_gba.hex.h> //this should be in const section, so that it doesn't get copied to sram by bootloader!
+__attribute__((section(".GBARAM.data.sram"))) uint8_t gba_sram[0x10000];
+
 
 #define USEC_PER_SEC (1000000ULL)
 
@@ -25,12 +30,26 @@ int main() {
   int err = 0;
   int res = 0;
 
-  set_sys_clock_khz(266e3, false); //gba doesn't boot if we go lower than 210e3
+  // set_sys_clock_khz(266e3, false); //boots even without overclocking :D
 
-  cassure(!(res = gbabus_sram_serve(bootloader_gba, sizeof(bootloader_gba))));
-  cassure(!(res = gbabusrom_sram_init()));
+  {
+    uint32_t tmpDmaChannel = NUM_DMA_CHANNELS-1;
+    dma_channel_config channel_config = dma_channel_get_default_config(tmpDmaChannel);
+    channel_config_set_transfer_data_size(&channel_config, DMA_SIZE_32);
+    channel_config_set_read_increment(&channel_config, true);
+    channel_config_set_write_increment(&channel_config, true);
+    dma_channel_configure(tmpDmaChannel, 
+                          &channel_config,
+                          gba_sram,                       //write target
+                          bootloader_gba,                 //read source 
+                          (sizeof(bootloader_gba)/4) +1,  //going a bit oob is fine
+                          true                            //start
+    );
+  }
 
-  // p/x ((dma_hw_t *)0x50000000)->ch[gDMA_channel_data_writer].write_addr
+  gbabus_rom_serve(gba_sram);
+  cassure(!(res = gbabus_init()));
+
 
   while (1){
     tight_loop_contents();
