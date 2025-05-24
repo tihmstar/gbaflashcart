@@ -1,0 +1,8 @@
+
+all: btcontroller_mb.gba
+
+btcontroller_mb.gba:
+	./make.sh
+
+clean:
+	./make.sh clean
