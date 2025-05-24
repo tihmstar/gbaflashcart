@@ -7,10 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define MEM_ROM ((uint16_t*)0x0C000000)
+#define MEM_ROM ((volatile uint16_t*)0x0C000000)
+#define MEM_ROM_MSG_OFFSET    0xd2
+#define MEM_ROM_STATUS_OFFSET 0xd0
+#define STATUS_OK 0x6969
 
 #define BOOTED_MAGIC "doneboot"
-char *dbgmsg = ((char*)MEM_ROM)+2;
+
+char msg[0x100] = {};
 
 int main(void){
 	
@@ -26,11 +30,24 @@ int main(void){
 	// /x1b[line;columnH
 	iprintf("\x1b[10;10HBooting\n");
 
-	while (1) {
-    uint16_t *dst = (uint16_t*)MEM_ROM;
-    for (int i=0; i<4; i++){
-      dst[i] = 0x4142;
+  while (MEM_ROM[MEM_ROM_STATUS_OFFSET/2] != 0x6969){
+    //notify cartridge that we booted successfully!
+    volatile uint8_t *dst = (volatile uint8_t*)(SRAM);
+    for (int i=0; i<8; i++){
+      dst[i] = BOOTED_MAGIC[i];
     }
+  }
+
+  for (size_t i = 0; i < sizeof(msg)/2; i++){
+    uint16_t *dst = (uint16_t*)msg;
+    uint16_t v = MEM_ROM[MEM_ROM_MSG_OFFSET/2 + i];
+    dst[i] = v;
+    if (!v) break;
+  }
+  
+  iprintf(CON_CLS() "\x1b[0;0H%s\n",msg);
+
+	while (1) {
 		VBlankIntrWait();
 	}
   

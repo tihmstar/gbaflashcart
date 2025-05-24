@@ -16,12 +16,16 @@
 
 const
 #include <bootloader_gba.hex.h> //this should be in const section, so that it doesn't get copied to sram by bootloader!
-__attribute__((section(".GBARAM.data.sram"))) uint8_t gba_sram[0x10000];
 
 
 #define USEC_PER_SEC (1000000ULL)
-
 #define GBABUS_PIN_IRQ 28
+
+#define BOOTED_MAGIC (*(uint64_t*)"doneboot")
+#define MEM_ROM_MSG_OFFSET    0xd2
+#define MEM_ROM_STATUS_OFFSET 0xd0
+#define STATUS_OK 0x6969
+#define STAGE2_MSG "Loading Menu...\x00\x00"
 
 static uint32_t testbuf[0x20] = {};
 
@@ -47,8 +51,17 @@ int main() {
     );
   }
 
-  gbabus_rom_serve(gba_sram);
+  gbabus_rom_serve((void*)gba_sram);
   cassure(!(res = gbabus_init()));
+
+  while (*((volatile uint64_t*)gba_sram) != BOOTED_MAGIC){
+    tight_loop_contents();
+  }
+  debug("Gameboy booted into bootloader!");
+  strcpy((char*)&gba_sram[MEM_ROM_MSG_OFFSET], STAGE2_MSG);
+  *(uint16_t*)&gba_sram[MEM_ROM_STATUS_OFFSET] = STATUS_OK;
+
+  debug("proceed loading stage2 ...");
 
 
   while (1){

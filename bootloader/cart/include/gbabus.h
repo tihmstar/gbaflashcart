@@ -8,6 +8,8 @@ extern "C" {
 #include <stdint.h>
 #include <stddef.h>
 
+extern volatile uint8_t gba_sram[0x10000];
+
 int gbabus_init();
 void gbabus_deinit();
 

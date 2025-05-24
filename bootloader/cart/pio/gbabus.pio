@@ -4,7 +4,14 @@
 .define public GBABUS_CS         24
 .define public GBABUS_RD         25
 .define public GBABUS_WR         26
-.define public GBABUS_CS2        31
+.define public GBABUS_CS2        27
+
+.program gbabus_cs2
+.wrap_target
+  WAIT 0 JMPPIN //GBABUS_CS2
+  IN PINS, 16
+  WAIT 1 JMPPIN //GBABUS_CS2
+.wrap
 
 .program gbabus_cs
 .wrap_target
@@ -12,13 +19,13 @@
   IN PINS, GBABUS_BUS_SIZE
   IN NULL, 1 //shift left & push
   WAIT 1 JMPPIN //GBABUS_CS
-  PULL
+  PULL noblock
 .wrap
 
 .program gbabus_rd
 public start:
 .wrap_target
-  JMP PIN start //check CS
+  WAIT 0 JMPPIN ; wait for CS
   WAIT 0 PIN GBABUS_RD
   JMP PIN start //re-check CS
 
@@ -35,12 +42,11 @@ public start:
   OUT PINDIRS, 16
 .wrap
 
-.program gbabus_wr
+.program gbabus_sram_wr
 .wrap_target
 public start:
-    wait 0 pin GBABUS_CS ; wait for CS
-    wait 0 pin GBABUS_WR ; wait for WR
-    JMP PIN start //re-check CS
-    in pins, 16
-    wait 1 pin GBABUS_WR
+    WAIT 0 pin (GBABUS_CS2-16) ; wait for CS2
+    JMP PIN start //check WR
+    IN PINS, 8
+    WAIT 1 pin (GBABUS_CS2-16) ; wait for CS2
 .wrap

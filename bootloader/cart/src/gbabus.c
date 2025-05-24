@@ -9,27 +9,37 @@
 #define GBABUS_PIO          pio0
 #define GBABUS_CS_SM        0
 #define GBABUS_RD_SM        1
-#define GBABUS_CS3_SM       2
-#define GBABUS_WR_SM        3
+#define GBABUS_CS2_SM       2
+#define GBABUS_SRAM_WR_SM   3
 
 
 static int gRomBus_cs_pio_pc = -1;
 static int gRomBus_rd_pio_pc = -1;
 static int gRomBus_cs2_pio_pc = -1;
-static int gRomBus_wr_pio_pc = -1;
+static int gRomBus_sram_wr_pio_pc = -1;
 
-static int gDMA_channel_base_address_loader = -1;
-static int gDMA_channel_cart_address_loader = -1;
+/*
+  Channels for serving ROM
+*/
+static int gDMA_channel_cart_rom_address_loader = -1;
+static int gDMA_channel_rom_base_address_loader = -1;
 static int gDMA_channel_fetch_trigger = -1;
 static int gDMA_channel_data_fetcher = -1;
-
 static int gDMA_channel_cs_high_waiter  = -1;
 static int gDMA_channel_cs_high_dma_abort = -1;
 static int gDMA_channel_cs_high_dma_clearerr = -1;
 static int gDMA_channel_cs_high_fifo_reset = -1;
 
+/*
+  Channels for GBA SRAM
+*/
+static int gDMA_channel_cart_sram_address_loader = -1;
+static int gDMA_channel_sram_base_address_loader = -1;
+static int gDMA_channel_sram_data_writer = -1;
+
 
 static const uint8_t *gGBAROMAddress = 0;
+__attribute__((section(".GBARAM.data.sram"))) volatile uint8_t gba_sram[0x10000];
 
 #pragma mark private
 static int gbabus_init_pio(){
@@ -93,8 +103,8 @@ static int gbabus_init_dma(){
   int err = 0;
 
 
-  if (gDMA_channel_cart_address_loader == -1) gDMA_channel_cart_address_loader = dma_claim_unused_channel(true);
-  if (gDMA_channel_base_address_loader == -1) gDMA_channel_base_address_loader = dma_claim_unused_channel(true);
+  if (gDMA_channel_cart_rom_address_loader == -1) gDMA_channel_cart_rom_address_loader = dma_claim_unused_channel(true);
+  if (gDMA_channel_rom_base_address_loader == -1) gDMA_channel_rom_base_address_loader = dma_claim_unused_channel(true);
   if (gDMA_channel_fetch_trigger == -1) gDMA_channel_fetch_trigger = dma_claim_unused_channel(true);
   if (gDMA_channel_data_fetcher == -1) gDMA_channel_data_fetcher = dma_claim_unused_channel(true);
   if (gDMA_channel_cs_high_waiter == -1) gDMA_channel_cs_high_waiter = dma_claim_unused_channel(true);
@@ -106,13 +116,13 @@ static int gbabus_init_dma(){
     /*
       1) Read rom address from GBA Bus and write it to sniff_data
     */
-    dma_channel_config channel_config = dma_channel_get_default_config(gDMA_channel_cart_address_loader); /* get default configuration */
+    dma_channel_config channel_config = dma_channel_get_default_config(gDMA_channel_cart_rom_address_loader); /* get default configuration */
     channel_config_set_dreq(&channel_config, pio_get_dreq(GBABUS_PIO, GBABUS_CS_SM, false)); /* configure data request. true: sending data to the PIO state machine */
     channel_config_set_transfer_data_size(&channel_config, DMA_SIZE_32);
     channel_config_set_read_increment(&channel_config, false);
     channel_config_set_write_increment(&channel_config, false);
-    channel_config_set_chain_to(&channel_config, gDMA_channel_base_address_loader);
-    dma_channel_configure(gDMA_channel_cart_address_loader,
+    channel_config_set_chain_to(&channel_config, gDMA_channel_rom_base_address_loader);
+    dma_channel_configure(gDMA_channel_cart_rom_address_loader,
                           &channel_config,
                           (&dma_hw->sniff_data),    //write address
                           &GBABUS_PIO->rxf[GBABUS_CS_SM],  //read address
@@ -125,13 +135,13 @@ static int gbabus_init_dma(){
       2) Perform addition using DMA to get correct ROM source address  
     */
     static uint32_t sDevNull;
-    dma_channel_config channel_config = dma_channel_get_default_config(gDMA_channel_base_address_loader); /* get default configuration */
+    dma_channel_config channel_config = dma_channel_get_default_config(gDMA_channel_rom_base_address_loader); /* get default configuration */
     channel_config_set_transfer_data_size(&channel_config, DMA_SIZE_32);
     channel_config_set_read_increment(&channel_config, false);
     channel_config_set_write_increment(&channel_config, false);
     channel_config_set_sniff_enable(&channel_config, true);
     channel_config_set_chain_to(&channel_config, gDMA_channel_fetch_trigger);
-    dma_channel_configure(gDMA_channel_base_address_loader, 
+    dma_channel_configure(gDMA_channel_rom_base_address_loader, 
                           &channel_config,
                           &sDevNull,                 //write target
                           &gGBAROMAddress,           //read source
@@ -139,7 +149,7 @@ static int gbabus_init_dma(){
                           false // do not trigger yet, will be done after all the
                                 // other DMAs are setup
     );
-    dma_sniffer_enable(gDMA_channel_base_address_loader, DMA_SNIFF_CTRL_CALC_VALUE_SUM, true);
+    dma_sniffer_enable(gDMA_channel_rom_base_address_loader, DMA_SNIFF_CTRL_CALC_VALUE_SUM, true);
   }
 
   {
@@ -276,6 +286,126 @@ error:
   return err;
 }
 
+static int gbabus_init_sram_pio(){
+  int err = 0;
+
+  if (gRomBus_cs2_pio_pc == -1){
+    pio_sm_set_enabled(GBABUS_PIO, GBABUS_CS2_SM, false);
+    pio_set_gpio_base(GBABUS_PIO, 0);
+
+    gRomBus_cs2_pio_pc = pio_add_program(GBABUS_PIO, &gbabus_cs2_program);
+    pio_sm_config c = gbabus_cs2_program_get_default_config(gRomBus_cs2_pio_pc);
+    sm_config_set_clkdiv(&c, 1);
+    
+    sm_config_set_jmp_pin(&c, GBABUS_CS2);
+    sm_config_set_in_pins(&c, GBABUS_BUS_START);
+    sm_config_set_in_shift(&c,  
+                            false, //shift_right
+                            true,  //autopush
+                            16
+                          );
+    sm_config_set_out_shift(&c,  
+                            false, //shift_right
+                            false,  //autopull
+                            32
+                          );
+
+    pio_sm_init(GBABUS_PIO, GBABUS_CS2_SM, gRomBus_cs2_pio_pc, &c);
+    pio_sm_set_enabled(GBABUS_PIO, GBABUS_CS2_SM, true);
+  }
+  
+  if (gRomBus_sram_wr_pio_pc == -1){
+    pio_sm_set_enabled(GBABUS_PIO, GBABUS_SRAM_WR_SM, false);
+
+    gRomBus_sram_wr_pio_pc = pio_add_program(GBABUS_PIO, &gbabus_sram_wr_program);
+    pio_sm_config c = gbabus_sram_wr_program_get_default_config(gRomBus_sram_wr_pio_pc);
+    sm_config_set_clkdiv(&c, 1);
+
+    sm_config_set_in_pins(&c, GBABUS_BUS_START+16);
+    sm_config_set_jmp_pin(&c, GBABUS_WR);
+    sm_config_set_in_shift(&c,  
+                            false, //shift_right
+                            true,  //autopush
+                            8
+                          );
+                   
+    pio_sm_init(GBABUS_PIO, GBABUS_SRAM_WR_SM, gRomBus_sram_wr_pio_pc, &c);
+    pio_sm_set_enabled(GBABUS_PIO, GBABUS_SRAM_WR_SM, true);
+  }
+
+error:
+  return err;
+}
+
+static uint32_t sSramAddress = (uint32_t)gba_sram;
+static int gbabus_init_sram_dma(){
+  int err = 0;
+
+  if (gDMA_channel_cart_sram_address_loader == -1) gDMA_channel_cart_sram_address_loader = dma_claim_unused_channel(true);
+  if (gDMA_channel_sram_base_address_loader == -1) gDMA_channel_sram_base_address_loader = dma_claim_unused_channel(true);
+  if (gDMA_channel_sram_data_writer == -1) gDMA_channel_sram_data_writer = dma_claim_unused_channel(true);
+
+
+  {
+    /*
+      1) Read sram address from GBA Bus and write it to sSramAddress
+    */
+    dma_channel_config channel_config = dma_channel_get_default_config(gDMA_channel_cart_sram_address_loader); /* get default configuration */
+    channel_config_set_dreq(&channel_config, pio_get_dreq(GBABUS_PIO, GBABUS_CS2_SM, false)); /* configure data request. true: sending data to the PIO state machine */
+    channel_config_set_transfer_data_size(&channel_config, DMA_SIZE_16);
+    channel_config_set_read_increment(&channel_config, false);
+    channel_config_set_write_increment(&channel_config, false);
+    channel_config_set_chain_to(&channel_config, gDMA_channel_sram_base_address_loader);
+    dma_channel_configure(gDMA_channel_cart_sram_address_loader,
+                          &channel_config,
+                          &sSramAddress,    //write address
+                          &GBABUS_PIO->rxf[GBABUS_CS2_SM],  //read address
+                          1 | (1u << 28),   //trigger self
+                          true); /* start */
+  }
+
+  {
+    /*
+      2) Perform addition using DMA to get correct SRAM address  
+    */
+    dma_channel_config channel_config = dma_channel_get_default_config(gDMA_channel_sram_base_address_loader); /* get default configuration */
+    channel_config_set_transfer_data_size(&channel_config, DMA_SIZE_32);
+    channel_config_set_read_increment(&channel_config, false);
+    channel_config_set_write_increment(&channel_config, false);
+    dma_channel_configure(gDMA_channel_sram_base_address_loader, 
+                          &channel_config,
+                          &dma_hw->ch[gDMA_channel_sram_data_writer].al2_write_addr_trig, //write target
+                          &sSramAddress,                                                  //read source
+                          1,    // always transfer one word (pointer)
+                          false // do not trigger yet, will be done after all the
+                                // other DMAs are setup
+    );
+  }
+
+  {
+    /*
+      3) Get data from PIO and write it to GBA SRAM
+    */
+    dma_channel_config channel_config = dma_channel_get_default_config(gDMA_channel_sram_data_writer); /* get default configuration */
+    channel_config_set_transfer_data_size(&channel_config, DMA_SIZE_8);
+    channel_config_set_read_increment(&channel_config, false);
+    channel_config_set_write_increment(&channel_config, true);
+    channel_config_set_dreq(&channel_config, pio_get_dreq(GBABUS_PIO, GBABUS_SRAM_WR_SM, false)); /* configure data request. true: sending data to the PIO state machine */
+    dma_channel_configure(gDMA_channel_sram_data_writer, 
+                          &channel_config,
+                          NULL, //write target will be set by other DMA
+                          &(GBABUS_PIO->rxf[GBABUS_SRAM_WR_SM]), //read source
+                          1,    //one transfer
+                          false // do not trigger yet, will be done after all the
+                                // other DMAs are setup
+    );
+  }
+
+error:
+  return err;
+}
+
+
 #pragma mark public
 int gbabus_init(){
   int err = 0;
@@ -284,12 +414,13 @@ int gbabus_init(){
     Configure PINS
   */
   pio_gpio_init(GBABUS_PIO, GBABUS_RD);
+  pio_gpio_init(GBABUS_PIO, GBABUS_WR);
   pio_gpio_init(GBABUS_PIO, GBABUS_CS);
   pio_gpio_init(GBABUS_PIO, GBABUS_CS2);
   for (uint i = GBABUS_BUS_START; i < GBABUS_BUS_START + GBABUS_BUS_SIZE; i++) {
     pio_gpio_init(GBABUS_PIO, i);
   }
-  uint32_t mask = ((1 << GBABUS_BUS_SIZE) - 1) | 1 << GBABUS_CS | 1 << GBABUS_RD;
+  uint32_t mask = ((1 << GBABUS_BUS_SIZE) - 1) | 1 << GBABUS_CS | 1 << GBABUS_CS2 | 1 << GBABUS_WR | 1 << GBABUS_RD;
   pio_sm_set_pins(GBABUS_PIO, GBABUS_CS_SM, 0);
   pio_sm_set_consecutive_pindirs(GBABUS_PIO, GBABUS_CS_SM, 0, 32, false);
   pio_sm_set_pindirs_with_mask(GBABUS_PIO, GBABUS_CS_SM, 0, mask);
@@ -298,8 +429,10 @@ int gbabus_init(){
 
   cassure(!gbabus_init_pio());
   cassure(!gbabus_init_dma());
-
   pio_sm_set_enabled(GBABUS_PIO, GBABUS_CS_SM, true);
+
+  cassure(!gbabus_init_sram_pio());
+  cassure(!gbabus_init_sram_dma());
 
 error:
   return err;
